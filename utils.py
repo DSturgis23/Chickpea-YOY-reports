@@ -39,7 +39,7 @@ CHART_BASE = dict(
 def inject_css():
     st.markdown(f"""
 <style>
-.block-container {{ padding-top: 1.4rem !important; padding-bottom: 3rem; }}
+.block-container {{ padding-top: 2.5rem !important; padding-bottom: 3rem; }}
 
 .page-hdr {{
     background: linear-gradient(120deg, {BRAND_GREEN} 0%, {MID_GREEN} 100%);
@@ -53,24 +53,38 @@ def inject_css():
 .ph-right {{ text-align: right; font-size: 0.74rem; opacity: 0.78; }}
 
 .kpi-card {{
-    background: white; border-radius: 12px; padding: 1rem 1.2rem;
+    background: white; border-radius: 12px; padding: 1rem 1.2rem 0.85rem;
     border-left: 5px solid {BRAND_GREEN};
     box-shadow: 0 2px 12px rgba(0,0,0,0.07);
-    margin-bottom: 0.3rem; min-height: 108px;
-    display: flex; flex-direction: column; justify-content: space-between;
+    margin-bottom: 0.3rem;
+    display: flex; flex-direction: column; gap: 0.18rem;
 }}
 .kpi-card.warn   {{ border-left-color: {WARN}; }}
 .kpi-card.danger {{ border-left-color: {BAD};  }}
-.kpi-label {{ font-size: 0.67rem; color: #999; text-transform: uppercase;
-              letter-spacing: 0.08em; font-weight: 700; margin-bottom: 2px; }}
-.kpi-value {{ font-size: 1.7rem; font-weight: 800; color: {BRAND_GREEN}; line-height: 1.1; }}
-.kpi-footer {{ display: flex; justify-content: space-between; align-items: center;
-               font-size: 0.72rem; margin-top: 4px; }}
-.kpi-ly  {{ color: #bbb; }}
-.d-pos   {{ color: {GOOD}; font-weight: 700; }}
-.d-neg   {{ color: {BAD};  font-weight: 700; }}
-.d-ipos  {{ color: {BAD};  font-weight: 700; }}
-.d-ineg  {{ color: {GOOD}; font-weight: 700; }}
+.kpi-label {{
+    font-size: 0.65rem; color: #999; text-transform: uppercase;
+    letter-spacing: 0.08em; font-weight: 700;
+}}
+.kpi-value {{
+    font-size: 1.65rem; font-weight: 800; color: {BRAND_GREEN}; line-height: 1.15;
+}}
+.kpi-ly-row {{
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-top: 0.3rem; border-top: 1px solid #f0f0f0; margin-top: 0.15rem;
+}}
+.kpi-ly-label {{
+    font-size: 0.72rem; color: #888; font-weight: 500;
+}}
+.kpi-ly-val {{
+    font-size: 0.88rem; color: #444; font-weight: 700;
+}}
+.kpi-delta {{
+    font-size: 0.85rem; font-weight: 700;
+}}
+.d-pos   {{ color: {GOOD}; }}
+.d-neg   {{ color: {BAD};  }}
+.d-ipos  {{ color: {BAD};  }}
+.d-ineg  {{ color: {GOOD}; }}
 
 .sec-hdr {{
     font-size: 0.8rem; font-weight: 700; color: {BRAND_GREEN};
@@ -120,6 +134,35 @@ def sec(text):
     st.markdown(f'<div class="sec-hdr">{text}</div>', unsafe_allow_html=True)
 
 
+def date_override(tab_key, ty_from_default, ty_to_default):
+    """
+    Show a compact date-range override row at the top of a tab.
+    Returns (ty_from, ty_to, ly_from, ly_to, is_custom).
+    When is_custom is False the global sidebar dates are returned unchanged.
+    """
+    with st.expander("📅 Custom date range for this tab", expanded=False):
+        c1, c2, c3 = st.columns([1, 1, 2])
+        ty_from = c1.date_input("From", ty_from_default, key=f"_tf_{tab_key}")
+        ty_to   = c2.date_input("To",   ty_to_default,   key=f"_tt_{tab_key}")
+        is_custom = (ty_from != ty_from_default or ty_to != ty_to_default)
+        if is_custom:
+            c3.markdown(
+                f"<div style='padding-top:1.8rem;font-size:0.78rem;color:#888;'>"
+                f"Custom range active: {ty_from.strftime('%d %b %Y')} – {ty_to.strftime('%d %b %Y')}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            c3.markdown(
+                "<div style='padding-top:1.8rem;font-size:0.78rem;color:#bbb;'>"
+                "Using global date range from sidebar.</div>",
+                unsafe_allow_html=True,
+            )
+    ly_from = ty_from.replace(year=ty_from.year - 1)
+    ly_to   = ty_to.replace(year=ty_to.year - 1)
+    return ty_from, ty_to, ly_from, ly_to, is_custom
+
+
 def note(text):
     st.markdown(f'<div class="note-box">{text}</div>', unsafe_allow_html=True)
 
@@ -149,8 +192,8 @@ def render_sidebar():
         if "show_net" not in st.session_state:
             st.session_state["show_net"] = False
 
-        ty_from = st.date_input("Period from", st.session_state["ty_from"], key="ty_from")
-        ty_to   = st.date_input("Period to",   st.session_state["ty_to"],   key="ty_to")
+        ty_from = st.date_input("Period from", key="ty_from")
+        ty_to   = st.date_input("Period to",   key="ty_to")
         ly_from = ty_from.replace(year=ty_from.year - 1)
         ly_to   = ty_to.replace(year=ty_to.year - 1)
 
@@ -269,21 +312,29 @@ def delta_pct(ty, ly):
     return None
 
 def _delt_html(delta, inverse=False):
-    if delta is None: return '<span style="color:#ccc">—</span>'
+    if delta is None: return '<span style="color:#ccc;font-size:0.85rem;">—</span>'
     p = delta * 100
     sym = "▲" if p >= 0 else "▼"
     cls = ("d-pos" if p >= 0 else "d-neg") if not inverse else ("d-ipos" if p >= 0 else "d-ineg")
-    return f'<span class="{cls}">{sym}&nbsp;{abs(p):.1f}%</span>'
+    return f'<span class="kpi-delta {cls}">{sym} {abs(p):.1f}%</span>'
 
-def kpi_html(title, ty_val, ly_str, delta, inverse=False, card_class=""):
+def kpi_html(title, ty_val, ly_val, delta, inverse=False, card_class=""):
+    """
+    Render a KPI card showing TY prominently and LY clearly below.
+    ly_val: pass a pre-formatted string e.g. "LY £123,456" or "LY 75.1%"
+    delta:  float ratio (ty-ly)/ly, or None
+    """
+    d_html = _delt_html(delta, inverse)
+    ly_display = ly_val if ly_val else "—"
     return (
         f'<div class="kpi-card {card_class}">'
         f'<div class="kpi-label">{title}</div>'
         f'<div class="kpi-value">{ty_val}</div>'
-        f'<div class="kpi-footer">'
-        f'<span class="kpi-ly">{ly_str}</span>'
-        f'{_delt_html(delta, inverse)}'
-        f'</div></div>'
+        f'<div class="kpi-ly-row">'
+        f'<span class="kpi-ly-val">{ly_display}</span>'
+        f'{d_html}'
+        f'</div>'
+        f'</div>'
     )
 
 def month_iter(from_d, to_d):

@@ -80,6 +80,25 @@ ROOMS_AND_FB = {
     "The Pembroke Arms", "The Queen's Head",
 }
 
+TEVALIS_API_URL  = "https://api.tevalis.com"
+TEVALIS_DEV_ID   = "chckpgrp-20260420-18b2ac2f-a4f6-4e07-b710-59b7bd5e18c1"
+TEVALIS_GUID     = "211600bc-23a6-4572-be90-7c9945b72fc7"
+TEVALIS_GUID2    = "b815fb9f-5c4c-43ae-a835-0e3d62f05111"
+TEVALIS_COMPANY  = "2498"
+
+# Site IDs — only Chickpea-owned venues included
+TEVALIS_SITES = {
+    "The Bell & Crown":    9359,
+    "The Dog & Gun":       9360,
+    "The Grosvenor Arms":  9361,
+    "The Pembroke Arms":   9362,
+    "The Queen's Head":    9363,
+    "The Silver Plough":   9364,
+    "The Manor House Inn": 9367,
+    "The Fleur de Lys":    9369,
+    "The Kings Arms":      9368,
+}
+
 PHONE_TARGET = 0.15
 BRAND_GREEN  = "#1C3829"
 BRAND_LIGHT  = "#C8DFC8"

@@ -310,3 +310,59 @@ def _empty_wds_metrics():
         "wet_pct": 0.0, "dry_pct": 0.0,
         "by_venue": {}, "by_month": {},
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEVALIS EPOS METRICS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def tevalis_metrics(df):
+    """
+    Aggregate Tevalis EPOS sales DataFrame into totals, by-venue and by-month.
+    Input columns: venue_name, month, wet, dry, total, covers, transactions
+    Returns dict matching the wds_metrics() schema plus covers and transactions.
+    """
+    if df is None or df.empty:
+        return _empty_tev_metrics()
+
+    total_wet  = float(df["wet"].sum())
+    total_dry  = float(df["dry"].sum())
+    total      = total_wet + total_dry
+    total_cov  = int(df["covers"].sum())
+    total_txns = int(df["transactions"].sum())
+
+    by_venue = {}
+    for venue, vdf in df.groupby("venue_name"):
+        vw = float(vdf["wet"].sum()); vd = float(vdf["dry"].sum()); vt = vw + vd
+        by_venue[str(venue)] = {
+            "wet": vw, "dry": vd, "total": vt,
+            "wet_pct": vw / vt if vt > 0 else 0.0,
+            "dry_pct": vd / vt if vt > 0 else 0.0,
+            "covers":  int(vdf["covers"].sum()),
+        }
+
+    by_month = {}
+    for month, mdf in df.groupby("month"):
+        mw = float(mdf["wet"].sum()); md = float(mdf["dry"].sum()); mt = mw + md
+        by_month[str(month)] = {
+            "wet": mw, "dry": md, "total": mt,
+            "wet_pct": mw / mt if mt > 0 else 0.0,
+            "covers":  int(mdf["covers"].sum()),
+        }
+
+    return {
+        "wet": total_wet, "dry": total_dry, "total": total,
+        "wet_pct": total_wet / total if total > 0 else 0.0,
+        "dry_pct": total_dry / total if total > 0 else 0.0,
+        "covers": total_cov, "transactions": total_txns,
+        "by_venue": by_venue, "by_month": by_month,
+    }
+
+
+def _empty_tev_metrics():
+    return {
+        "wet": 0.0, "dry": 0.0, "total": 0.0,
+        "wet_pct": 0.0, "dry_pct": 0.0,
+        "covers": 0, "transactions": 0,
+        "by_venue": {}, "by_month": {},
+    }

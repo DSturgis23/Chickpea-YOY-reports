@@ -4,6 +4,7 @@
 
 import re
 import io as _io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 
 import pandas as pd
@@ -12,9 +13,11 @@ import requests
 from config import (
     get_eviivo_creds, get_sr_creds,
     EVIIVO_PROPERTIES, SALES_VENUE_MAP,
+    TEVALIS_API_URL, TEVALIS_DEV_ID, TEVALIS_GUID,
+    TEVALIS_GUID2, TEVALIS_COMPANY, TEVALIS_SITES,
 )
 
-CHUNK_DAYS = 30  # Eviivo max days per request chunk
+CHUNK_DAYS = 90  # days per Eviivo request chunk (larger = fewer round trips)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -75,63 +78,74 @@ def _normalise_channel(raw):
     return raw.strip() or "Other"
 
 
+def _fetch_ev_venue(token, venue_name, shortname, from_date, to_date):
+    """Fetch all bookings for a single Eviivo property. Returns list of record dicts."""
+    records = []
+    seen = {}
+    chunk_start = from_date
+    while chunk_start <= to_date:
+        chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS - 1), to_date)
+        try:
+            raw = _ev_fetch_chunk(token, shortname, chunk_start, chunk_end)
+        except Exception:
+            raw = []
+        for rec in raw:
+            b   = rec.get("Booking", {})
+            ref = b.get("BookingReference", "")
+            if not ref or ref in seen:
+                continue
+            seen[ref] = True
+            checkin_str  = b.get("CheckinDate", "")
+            checkout_str = b.get("CheckoutDate", "")
+            try:
+                checkin = date.fromisoformat(checkin_str[:10])
+            except Exception:
+                checkin = chunk_start
+            try:
+                checkout = date.fromisoformat(checkout_str[:10])
+            except Exception:
+                checkout = checkin + timedelta(days=1)
+            nights  = max((checkout - checkin).days, 1)
+            revenue = float(
+                b.get("Total", {}).get("GrossAmount", {}).get("Value", 0) or 0
+            )
+            channel_raw = (
+                b.get("BookingSource") or b.get("Source") or
+                b.get("DistributionChannel") or b.get("Channel") or ""
+            )
+            records.append({
+                "venue_name":  venue_name,
+                "booking_ref": ref,
+                "checkin":     checkin,
+                "checkout":    checkout,
+                "nights":      nights,
+                "revenue":     revenue,
+                "status":      "Cancelled" if b.get("Cancelled") else "Confirmed",
+                "channel":     _normalise_channel(channel_raw),
+            })
+        chunk_start = chunk_end + timedelta(days=1)
+    return records
+
+
 def fetch_ev_bookings(token, from_date, to_date):
     """
-    Fetch all bookings for all Eviivo properties within the check-in date range.
+    Fetch all bookings for all Eviivo properties — properties run in parallel.
     Returns DataFrame with columns:
         venue_name, booking_ref, checkin, checkout, nights, revenue, status, channel
     """
-    records = []
-    for venue_name, shortname in EVIIVO_PROPERTIES.items():
-        seen = {}
-        chunk_start = from_date
-        while chunk_start <= to_date:
-            chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS - 1), to_date)
+    all_records = []
+    with ThreadPoolExecutor(max_workers=len(EVIIVO_PROPERTIES)) as pool:
+        futures = {
+            pool.submit(_fetch_ev_venue, token, vname, sname, from_date, to_date): vname
+            for vname, sname in EVIIVO_PROPERTIES.items()
+        }
+        for fut in as_completed(futures):
             try:
-                raw = _ev_fetch_chunk(token, shortname, chunk_start, chunk_end)
+                all_records.extend(fut.result())
             except Exception:
-                raw = []
+                pass
 
-            for rec in raw:
-                b   = rec.get("Booking", {})
-                ref = b.get("BookingReference", "")
-                if not ref or ref in seen:
-                    continue
-                seen[ref] = True
-
-                checkin_str  = b.get("CheckinDate", "")
-                checkout_str = b.get("CheckoutDate", "")
-                try:
-                    checkin = date.fromisoformat(checkin_str[:10])
-                except Exception:
-                    checkin = chunk_start
-                try:
-                    checkout = date.fromisoformat(checkout_str[:10])
-                except Exception:
-                    checkout = checkin + timedelta(days=1)
-
-                nights = max((checkout - checkin).days, 1)
-                revenue = float(
-                    b.get("Total", {}).get("GrossAmount", {}).get("Value", 0) or 0
-                )
-                channel_raw = (
-                    b.get("BookingSource") or b.get("Source") or
-                    b.get("DistributionChannel") or b.get("Channel") or ""
-                )
-
-                records.append({
-                    "venue_name":  venue_name,
-                    "booking_ref": ref,
-                    "checkin":     checkin,
-                    "checkout":    checkout,
-                    "nights":      nights,
-                    "revenue":     revenue,
-                    "status":      "Cancelled" if b.get("Cancelled") else "Confirmed",
-                    "channel":     _normalise_channel(channel_raw),
-                })
-            chunk_start = chunk_end + timedelta(days=1)
-
-    return pd.DataFrame(records) if records else pd.DataFrame(
+    return pd.DataFrame(all_records) if all_records else pd.DataFrame(
         columns=["venue_name", "booking_ref", "checkin", "checkout",
                  "nights", "revenue", "status", "channel"]
     )
@@ -421,4 +435,100 @@ def parse_sales_excel(uploaded_file, from_date, to_date):
     return (
         pd.DataFrame(records) if records
         else pd.DataFrame(columns=["venue_name", "week_date", "wet", "dry", "total"])
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEVALIS EPOS
+# ══════════════════════════════════════════════════════════════════════════════
+
+_TEV_HEADERS = {
+    "DevID":     TEVALIS_DEV_ID,
+    "GUID":      TEVALIS_GUID,
+    "GUID2":     TEVALIS_GUID2,
+    "CompanyID": TEVALIS_COMPANY,
+}
+
+
+def _tev_summary(site_id, from_date, to_date):
+    """
+    Call /Reporting/v1/Enterprise/GetTradingSummaryReport for one site + period.
+    Returns list of row dicts (Beverage / Food / etc).
+    """
+    resp = requests.get(
+        f"{TEVALIS_API_URL}/Reporting/v1/Enterprise/GetTradingSummaryReport",
+        headers=_TEV_HEADERS,
+        params={
+            "uriCommand.siteIDs":  site_id,
+            "uriCommand.dateFrom": from_date.isoformat(),
+            "uriCommand.dateTo":   to_date.isoformat(),
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json() if isinstance(resp.json(), list) else []
+
+
+def fetch_tevalis_sales(from_date, to_date):
+    """
+    Fetch Tevalis EPOS sales for all configured sites across [from_date, to_date].
+    Breaks the range into monthly chunks to avoid timeouts.
+    Returns DataFrame with columns:
+        venue_name, month, wet, dry, total, covers, transactions
+    All revenue values are gross (inc. VAT).
+    """
+    records = []
+
+    # Build list of month chunks
+    chunks = []
+    m_start = from_date.replace(day=1)
+    while m_start <= to_date:
+        if m_start.month == 12:
+            m_end  = date(m_start.year + 1, 1, 1) - timedelta(days=1)
+            next_m = date(m_start.year + 1, 1, 1)
+        else:
+            m_end  = date(m_start.year, m_start.month + 1, 1) - timedelta(days=1)
+            next_m = date(m_start.year, m_start.month + 1, 1)
+        chunks.append((max(m_start, from_date), min(m_end, to_date)))
+        m_start = next_m
+
+    def _fetch_site_month(venue_name, site_id, chunk_from, chunk_to):
+        try:
+            rows = _tev_summary(site_id, chunk_from, chunk_to)
+        except Exception:
+            return None
+        wet = dry = covers = txns = 0.0
+        for row in rows:
+            if row.get("LineDescription") != "ProductTypes":
+                continue
+            ptype = str(row.get("ProductTypeName") or "").strip().lower()
+            gross = float(row.get("TotalGross") or 0)
+            if ptype == "beverage":
+                wet    += gross
+                covers += float(row.get("TotalCovers") or 0)
+                txns   += float(row.get("TotalTransactions") or 0)
+            elif ptype == "food":
+                dry += gross
+        if wet + dry == 0:
+            return None
+        return {"venue_name": venue_name, "month": chunk_from.strftime("%Y-%m"),
+                "wet": wet, "dry": dry, "total": wet + dry,
+                "covers": int(covers), "transactions": int(txns)}
+
+    tasks = [
+        (vname, sid, cf, ct)
+        for vname, sid in TEVALIS_SITES.items()
+        for cf, ct in chunks
+    ]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_fetch_site_month, *t) for t in tasks]
+        for fut in as_completed(futures):
+            result = fut.result()
+            if result:
+                records.append(result)
+
+    return (
+        pd.DataFrame(records) if records
+        else pd.DataFrame(columns=["venue_name", "month", "wet", "dry",
+                                   "total", "covers", "transactions"])
     )
