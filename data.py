@@ -129,21 +129,13 @@ def _fetch_ev_venue(token, venue_name, shortname, from_date, to_date):
 
 def fetch_ev_bookings(token, from_date, to_date):
     """
-    Fetch all bookings for all Eviivo properties — properties run in parallel.
+    Fetch all bookings for all Eviivo properties sequentially.
     Returns DataFrame with columns:
         venue_name, booking_ref, checkin, checkout, nights, revenue, status, channel
     """
     all_records = []
-    with ThreadPoolExecutor(max_workers=len(EVIIVO_PROPERTIES)) as pool:
-        futures = {
-            pool.submit(_fetch_ev_venue, token, vname, sname, from_date, to_date): vname
-            for vname, sname in EVIIVO_PROPERTIES.items()
-        }
-        for fut in as_completed(futures):
-            try:
-                all_records.extend(fut.result())
-            except Exception:
-                pass
+    for vname, sname in EVIIVO_PROPERTIES.items():
+        all_records.extend(_fetch_ev_venue(token, vname, sname, from_date, to_date))
 
     return pd.DataFrame(all_records) if all_records else pd.DataFrame(
         columns=["venue_name", "booking_ref", "checkin", "checkout",
@@ -515,15 +507,9 @@ def fetch_tevalis_sales(from_date, to_date):
                 "wet": wet, "dry": dry, "total": wet + dry,
                 "covers": int(covers), "transactions": int(txns)}
 
-    tasks = [
-        (vname, sid, cf, ct)
-        for vname, sid in TEVALIS_SITES.items()
-        for cf, ct in chunks
-    ]
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(_fetch_site_month, *t) for t in tasks]
-        for fut in as_completed(futures):
-            result = fut.result()
+    for vname, sid in TEVALIS_SITES.items():
+        for cf, ct in chunks:
+            result = _fetch_site_month(vname, sid, cf, ct)
             if result:
                 records.append(result)
 
