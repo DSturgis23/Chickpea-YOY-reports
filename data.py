@@ -17,7 +17,7 @@ from config import (
     TEVALIS_GUID2, TEVALIS_COMPANY, TEVALIS_SITES,
 )
 
-CHUNK_DAYS = 90  # days per Eviivo request chunk (larger = fewer round trips)
+CHUNK_DAYS = 30  # days per Eviivo request chunk (matches working hotel reports app)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -129,13 +129,23 @@ def _fetch_ev_venue(token, venue_name, shortname, from_date, to_date):
 
 def fetch_ev_bookings(token, from_date, to_date):
     """
-    Fetch all bookings for all Eviivo properties sequentially.
+    Fetch all bookings for all Eviivo properties using max 4 parallel workers.
     Returns DataFrame with columns:
         venue_name, booking_ref, checkin, checkout, nights, revenue, status, channel
     """
     all_records = []
-    for vname, sname in EVIIVO_PROPERTIES.items():
-        all_records.extend(_fetch_ev_venue(token, vname, sname, from_date, to_date))
+    errors = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            pool.submit(_fetch_ev_venue, token, vname, sname, from_date, to_date): vname
+            for vname, sname in EVIIVO_PROPERTIES.items()
+        }
+        for fut in as_completed(futures):
+            vname = futures[fut]
+            try:
+                all_records.extend(fut.result())
+            except Exception as e:
+                errors.append(f"{vname}: {e}")
 
     return pd.DataFrame(all_records) if all_records else pd.DataFrame(
         columns=["venue_name", "booking_ref", "checkin", "checkout",

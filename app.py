@@ -136,35 +136,41 @@ def load_feedback_cached(tf, tt, lf, lt, vm_items):
 
 _EMBEDDED = Path(__file__).parent / "data" / "weekly_sales.xlsx"
 
-# ── Single cached function: fetch APIs + compute metrics, return dicts only ───
-# Returning dicts (not DataFrames) means Streamlit's cache never has to copy
-# large DataFrames on re-renders — every subsequent call is a fast dict lookup.
+# ── Each period cached independently so a failure in one doesn't affect the other ─
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_all(tf, tt, lf, lt):
-    out = {"ev_err": None, "sr_err": None, "vm": {}}
+def _ev_metrics_for(from_d, to_d):
+    """Fetch Eviivo + compute metrics for one period. Returns (metrics_dict, error_str)."""
     try:
         tok = D.get_ev_token()
-        ty_ev_df = D.fetch_ev_bookings(tok, tf, tt)
-        ly_ev_df = D.fetch_ev_bookings(tok, lf, lt)
-        out["ty_ev"] = M.ev_metrics(ty_ev_df, tf, tt)
-        out["ly_ev"] = M.ev_metrics(ly_ev_df, lf, lt)
+        df  = D.fetch_ev_bookings(tok, from_d, to_d)
+        return M.ev_metrics(df, from_d, to_d), None
     except Exception as e:
-        out["ty_ev"] = M.ev_metrics(pd.DataFrame(), tf, tt)
-        out["ly_ev"] = M.ev_metrics(pd.DataFrame(), lf, lt)
-        out["ev_err"] = str(e)
+        return M.ev_metrics(pd.DataFrame(), from_d, to_d), str(e)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _sr_metrics_for(from_d, to_d):
+    """Fetch SevenRooms + compute metrics for one period. Returns (metrics, vm, error_str)."""
     try:
-        st_tok = D.get_sr_token()
-        vm = D.fetch_sr_venues(st_tok)
-        ty_sr_df = D.fetch_sr_reservations(st_tok, vm, tf, tt)
-        ly_sr_df = D.fetch_sr_reservations(st_tok, vm, lf, lt)
-        out["ty_sr"] = M.sr_metrics(ty_sr_df)
-        out["ly_sr"] = M.sr_metrics(ly_sr_df)
-        out["vm"]    = vm
+        tok = D.get_sr_token()
+        vm  = D.fetch_sr_venues(tok)
+        df  = D.fetch_sr_reservations(tok, vm, from_d, to_d)
+        return M.sr_metrics(df), vm, None
     except Exception as e:
-        out["ty_sr"] = M.sr_metrics(pd.DataFrame())
-        out["ly_sr"] = M.sr_metrics(pd.DataFrame())
-        out["sr_err"] = str(e)
-    return out
+        return M.sr_metrics(pd.DataFrame()), {}, str(e)
+
+def load_all(tf, tt, lf, lt):
+    """Assemble all metrics for both periods from independently-cached fetches."""
+    ty_ev, ev_err_ty = _ev_metrics_for(tf, tt)
+    ly_ev, ev_err_ly = _ev_metrics_for(lf, lt)
+    ty_sr, vm,  sr_err_ty = _sr_metrics_for(tf, tt)
+    ly_sr, _vm2, sr_err_ly = _sr_metrics_for(lf, lt)
+    return {
+        "ty_ev": ty_ev, "ly_ev": ly_ev,
+        "ty_sr": ty_sr, "ly_sr": ly_sr,
+        "vm":    vm,
+        "ev_err": ev_err_ty or ev_err_ly,
+        "sr_err": sr_err_ty or sr_err_ly,
+    }
 
 @st.cache_data(ttl=None, show_spinner=False)   # historical — never expires
 def load_sales(tf, tt, lf, lt):
@@ -209,11 +215,14 @@ def lyk(m): return m.replace(year=m.year - 1).strftime("%Y-%m")
 
 
 def metrics_for(tf, tt, lf, lt):
-    """Return metrics for a custom date range. All cached — fast on repeat calls."""
-    d = load_all(tf, tt, lf, lt)
+    """Return metrics for a custom date range. Each period independently cached."""
+    ty_ev, _ = _ev_metrics_for(tf, tt)
+    ly_ev, _ = _ev_metrics_for(lf, lt)
+    ty_sr, _, _ = _sr_metrics_for(tf, tt)
+    ly_sr, _, _ = _sr_metrics_for(lf, lt)
     twd_m, lwd_m = load_sales(tf, tt, lf, lt)
     ml = month_iter(tf, tt)
-    return (d["ty_ev"], d["ly_ev"], d["ty_sr"], d["ly_sr"],
+    return (ty_ev, ly_ev, ty_sr, ly_sr,
             twd_m, lwd_m, twd_m["total"] > 0, ml, [m.strftime("%b %y") for m in ml])
 
 # Shorthand revenue refs used in multiple tabs
