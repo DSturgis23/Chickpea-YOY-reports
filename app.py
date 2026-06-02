@@ -204,21 +204,28 @@ def load_tevalis(tf, tt, lf, lt):
         out["err"] = str(e)
     return out
 
-# ── Load once — all fetches run in parallel; subsequent re-renders are instant ──
+# ── Load once — Eviivo + SevenRooms + sales in parallel; Tevalis lazy ──────────
 with st.spinner("Loading data…"):
-    with ThreadPoolExecutor(max_workers=3) as _lpool:
-        _f_all   = _lpool.submit(load_all,    ty_from, ty_to, ly_from, ly_to)
-        _f_sales = _lpool.submit(load_sales,  ty_from, ty_to, ly_from, ly_to)
-        _f_tev   = _lpool.submit(load_tevalis, ty_from, ty_to, ly_from, ly_to)
-        _d               = _f_all.result()
-        ty_wd, ly_wd     = _f_sales.result()
-        tev_raw          = _f_tev.result()
+    with ThreadPoolExecutor(max_workers=2) as _lpool:
+        _f_all   = _lpool.submit(load_all,   ty_from, ty_to, ly_from, ly_to)
+        _f_sales = _lpool.submit(load_sales, ty_from, ty_to, ly_from, ly_to)
+        _d           = _f_all.result()
+        ty_wd, ly_wd = _f_sales.result()
 
 ty_ev = _d["ty_ev"]; ly_ev = _d["ly_ev"]
 ty_sr = _d["ty_sr"]; ly_sr = _d["ly_sr"]
 _vm   = _d["vm"]
-ty_tev = M.tevalis_metrics(tev_raw.get("ty", pd.DataFrame()))
-ly_tev = M.tevalis_metrics(tev_raw.get("ly", pd.DataFrame()))
+
+# Tevalis is loaded lazily in the EPOS tab and stored in session_state so that
+# the Reservations tab can use it on the next render without waiting for it.
+_tev_key = (ty_from, ty_to, ly_from, ly_to)
+_tev_cached = st.session_state.get("_tev_data")
+if _tev_cached and _tev_cached.get("key") == _tev_key:
+    ty_tev = _tev_cached["ty_tev"]
+    ly_tev = _tev_cached["ly_tev"]
+else:
+    ty_tev = M.tevalis_metrics(pd.DataFrame())
+    ly_tev = M.tevalis_metrics(pd.DataFrame())
 
 if _d["ev_err"]: st.sidebar.warning(f"Eviivo: {_d['ev_err'][:80]}")
 if _d["sr_err"]: st.sidebar.warning(f"SevenRooms: {_d['sr_err'][:80]}")
@@ -1056,9 +1063,19 @@ with tab_epos:
         'financial year, it will replace the spreadsheet upload.</div>',
         unsafe_allow_html=True,
     )
+    with st.spinner("Loading EPOS data from Tevalis…"):
+        _tev_raw = load_tevalis(ty_from, ty_to, ly_from, ly_to)
+    ty_tev = M.tevalis_metrics(_tev_raw.get("ty", pd.DataFrame()))
+    ly_tev = M.tevalis_metrics(_tev_raw.get("ly", pd.DataFrame()))
+    # Cache in session_state so Reservations tab can use it on next render
+    st.session_state["_tev_data"] = {
+        "key":    (ty_from, ty_to, ly_from, ly_to),
+        "ty_tev": ty_tev,
+        "ly_tev": ly_tev,
+    }
     has_tev = ty_tev["total"] > 0
     if not has_tev:
-        st.info("No Tevalis EPOS data loaded yet — try refreshing.")
+        st.info("No Tevalis EPOS data available — check Tevalis credentials or try refreshing.")
     else:
         wet_ty = ty_tev["wet"]; wet_ly = ly_tev["wet"] or 0
         dry_ty = ty_tev["dry"]; dry_ly = ly_tev["dry"] or 0
@@ -1075,6 +1092,20 @@ with tab_epos:
             f"{_ec_ty:,}" if _ec_ty else "—",
             f"LY {_ec_ly:,}" if _ec_ly else "—",
             delta_pct(_ec_ty, _ec_ly) if _ec_ty and _ec_ly else None), unsafe_allow_html=True)
+
+        sec("Covers — Two Methods Compared")
+        cm1, cm2 = st.columns(2)
+        cm1.markdown(kpi_html("SevenRooms Covers",
+            f"{cov_ty:,}", f"LY {cov_ly:,}", delta_pct(cov_ty, cov_ly)), unsafe_allow_html=True)
+        cm1.caption("Advance reservations only — walk-ins not included.")
+        cm2.markdown(kpi_html("EPOS Covers (Mains sold)",
+            f"{_ec_ty:,}" if _ec_ty else "—",
+            f"LY {_ec_ly:,}" if _ec_ly else "—",
+            delta_pct(_ec_ty, _ec_ly) if _ec_ty and _ec_ly else None), unsafe_allow_html=True)
+        cm2.caption("Mains, pizza, handmade pie, roast & pub bangers sold via Tevalis — includes walk-ins.")
+        if _ec_ty and cov_ty:
+            _walk_in_est = max(_ec_ty - cov_ty, 0)
+            st.caption(f"Estimated walk-in covers this year: ~{_walk_in_est:,} ({_walk_in_est/_ec_ty*100:.0f}% of EPOS covers)")
 
         sec("Monthly F&B Revenue — EPOS (Tevalis)")
         ty_wet_m_t = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("wet") or 0) for m in months_list]
