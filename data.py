@@ -471,16 +471,53 @@ def _tev_summary(site_id, from_date, to_date):
     return resp.json() if isinstance(resp.json(), list) else []
 
 
+_TEV_COVER_GROUPS = frozenset({"mains", "pizza", "handmade pie", "roast", "pub bangers"})
+
+
+def _tev_fetch_site_month(venue_name, site_id, chunk_from, chunk_to):
+    """Fetch and parse one Tevalis site×month combination."""
+    try:
+        rows = _tev_summary(site_id, chunk_from, chunk_to)
+    except Exception:
+        return None
+    wet = dry = covers = txns = 0.0
+    epos_covers = 0
+    for row in rows:
+        line_desc = str(row.get("LineDescription") or "").strip()
+        if line_desc == "ProductTypes":
+            ptype = str(row.get("ProductTypeName") or "").strip().lower()
+            gross = float(row.get("TotalGross") or 0)
+            if ptype == "beverage":
+                wet    += gross
+                covers += float(row.get("TotalCovers") or 0)
+                txns   += float(row.get("TotalTransactions") or 0)
+            elif ptype == "food":
+                dry += gross
+        elif line_desc in ("ProductGroups", "ProductGroup"):
+            grp = str(
+                row.get("ProductGroupName") or row.get("GroupName") or
+                row.get("ProductGroup") or ""
+            ).strip().lower()
+            if grp in _TEV_COVER_GROUPS:
+                epos_covers += int(float(
+                    row.get("TotalTransactions") or row.get("TotalCovers") or 0
+                ))
+    if wet + dry == 0:
+        return None
+    return {"venue_name": venue_name, "month": chunk_from.strftime("%Y-%m"),
+            "wet": wet, "dry": dry, "total": wet + dry,
+            "covers": int(covers), "transactions": int(txns),
+            "epos_covers": epos_covers}
+
+
 def fetch_tevalis_sales(from_date, to_date):
     """
     Fetch Tevalis EPOS sales for all configured sites across [from_date, to_date].
-    Breaks the range into monthly chunks to avoid timeouts.
+    All site×month combinations fetched in parallel (max 12 workers).
     Returns DataFrame with columns:
-        venue_name, month, wet, dry, total, covers, transactions
+        venue_name, month, wet, dry, total, covers, transactions, epos_covers
     All revenue values are gross (inc. VAT).
     """
-    records = []
-
     # Build list of month chunks
     chunks = []
     m_start = from_date.replace(day=1)
@@ -494,46 +531,15 @@ def fetch_tevalis_sales(from_date, to_date):
         chunks.append((max(m_start, from_date), min(m_end, to_date)))
         m_start = next_m
 
-    # Product groups that indicate one diner = one cover
-    _COVER_GROUPS = frozenset({"mains", "pizza", "handmade pie", "roast", "pub bangers"})
+    records = []
+    jobs = [(vname, sid, cf, ct)
+            for vname, sid in TEVALIS_SITES.items()
+            for cf, ct in chunks]
 
-    def _fetch_site_month(venue_name, site_id, chunk_from, chunk_to):
-        try:
-            rows = _tev_summary(site_id, chunk_from, chunk_to)
-        except Exception:
-            return None
-        wet = dry = covers = txns = 0.0
-        epos_covers = 0
-        for row in rows:
-            line_desc = str(row.get("LineDescription") or "").strip()
-            if line_desc == "ProductTypes":
-                ptype = str(row.get("ProductTypeName") or "").strip().lower()
-                gross = float(row.get("TotalGross") or 0)
-                if ptype == "beverage":
-                    wet    += gross
-                    covers += float(row.get("TotalCovers") or 0)
-                    txns   += float(row.get("TotalTransactions") or 0)
-                elif ptype == "food":
-                    dry += gross
-            elif line_desc in ("ProductGroups", "ProductGroup"):
-                grp = str(
-                    row.get("ProductGroupName") or row.get("GroupName") or
-                    row.get("ProductGroup") or ""
-                ).strip().lower()
-                if grp in _COVER_GROUPS:
-                    epos_covers += int(float(
-                        row.get("TotalTransactions") or row.get("TotalCovers") or 0
-                    ))
-        if wet + dry == 0:
-            return None
-        return {"venue_name": venue_name, "month": chunk_from.strftime("%Y-%m"),
-                "wet": wet, "dry": dry, "total": wet + dry,
-                "covers": int(covers), "transactions": int(txns),
-                "epos_covers": epos_covers}
-
-    for vname, sid in TEVALIS_SITES.items():
-        for cf, ct in chunks:
-            result = _fetch_site_month(vname, sid, cf, ct)
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = [pool.submit(_tev_fetch_site_month, vn, sid, cf, ct) for vn, sid, cf, ct in jobs]
+        for fut in as_completed(futures):
+            result = fut.result()
             if result:
                 records.append(result)
 

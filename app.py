@@ -194,8 +194,11 @@ def load_sales(tf, tt, lf, lt):
 def load_tevalis(tf, tt, lf, lt):
     out = {}
     try:
-        out["ty"] = D.fetch_tevalis_sales(tf, tt)
-        out["ly"] = D.fetch_tevalis_sales(lf, lt)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_ty = pool.submit(D.fetch_tevalis_sales, tf, tt)
+            f_ly = pool.submit(D.fetch_tevalis_sales, lf, lt)
+            out["ty"] = f_ty.result()
+            out["ly"] = f_ly.result()
     except Exception as e:
         out["ty"] = pd.DataFrame(); out["ly"] = pd.DataFrame()
         out["err"] = str(e)
