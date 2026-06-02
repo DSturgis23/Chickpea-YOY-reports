@@ -59,7 +59,9 @@ ROOM_COUNTS = {
 # Historical room count changes: (property_name, date_of_change_str, rooms_BEFORE_that_date)
 # date_of_change_str is ISO format "YYYY-MM-DD"
 ROOM_COUNT_HISTORY = [
-    ("The Queen's Head", "2026-03-01", 4),
+    ("The Queen's Head",    "2026-03-01", 4),   # expanded 4→9 rooms March 2026
+    ("The Fleur de Lys",   "2025-10-01", 0),   # opened late Sep 2025; 0 rooms before Oct 2025
+    ("The Manor House Inn","2025-02-01", 0),   # joined Eviivo Feb 2025; 0 rooms before that
 ]
 
 SALES_VENUE_MAP = {

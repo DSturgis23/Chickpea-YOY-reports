@@ -4,6 +4,7 @@ Single-page multi-tab app.
 """
 import calendar
 import io
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -159,11 +160,16 @@ def _sr_metrics_for(from_d, to_d):
         return M.sr_metrics(pd.DataFrame()), {}, str(e)
 
 def load_all(tf, tt, lf, lt):
-    """Assemble all metrics for both periods from independently-cached fetches."""
-    ty_ev, ev_err_ty = _ev_metrics_for(tf, tt)
-    ly_ev, ev_err_ly = _ev_metrics_for(lf, lt)
-    ty_sr, vm,  sr_err_ty = _sr_metrics_for(tf, tt)
-    ly_sr, _vm2, sr_err_ly = _sr_metrics_for(lf, lt)
+    """Assemble all metrics for both periods — all four fetches run in parallel."""
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_ev_ty = pool.submit(_ev_metrics_for, tf, tt)
+        f_ev_ly = pool.submit(_ev_metrics_for, lf, lt)
+        f_sr_ty = pool.submit(_sr_metrics_for, tf, tt)
+        f_sr_ly = pool.submit(_sr_metrics_for, lf, lt)
+        ty_ev, ev_err_ty      = f_ev_ty.result()
+        ly_ev, ev_err_ly      = f_ev_ly.result()
+        ty_sr, vm,  sr_err_ty = f_sr_ty.result()
+        ly_sr, _,   sr_err_ly = f_sr_ly.result()
     return {
         "ty_ev": ty_ev, "ly_ev": ly_ev,
         "ty_sr": ty_sr, "ly_sr": ly_sr,
@@ -444,81 +450,6 @@ with tab_rooms:
     note("The Fleur de Lys opened late Sep 2025 and Manor House Inn joined Eviivo Feb 2025 — "
          "their YOY comparisons reflect new trading periods. The Queen's Head expanded from 4 to "
          "9 rooms in March 2026.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 10 — EPOS LIVE (Tevalis — supplementary / going forward)
-# ─────────────────────────────────────────────────────────────────────────────
-with tab_epos:
-    st.markdown(
-        '<div class="info-box"><b>EPOS Live</b> pulls directly from Tevalis in real time. '
-        'This tab is supplementary — all F&B figures across the rest of the dashboard '
-        'use your uploaded spreadsheet. Going forward, once Tevalis covers the full '
-        'financial year, it will replace the spreadsheet upload.</div>',
-        unsafe_allow_html=True,
-    )
-    with st.spinner("Loading Tevalis EPOS data…"):
-        tev_raw = load_tevalis(ty_from, ty_to, ly_from, ly_to)
-    ty_tev = M.tevalis_metrics(tev_raw.get("ty", pd.DataFrame()))
-    ly_tev = M.tevalis_metrics(tev_raw.get("ly", pd.DataFrame()))
-    has_tev = ty_tev["total"] > 0
-    if not has_tev:
-        st.info("No Tevalis EPOS data loaded yet — try refreshing.")
-    else:
-        wet_ty = ty_tev["wet"]; wet_ly = ly_tev["wet"] or 0
-        dry_ty = ty_tev["dry"]; dry_ly = ly_tev["dry"] or 0
-        fb_tev_ty = ty_tev["total"]; fb_tev_ly = ly_tev["total"] or 0
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.markdown(kpi_html(f"Total F&B {'(Net)' if show_net else '(Gross)'}",
-            gbp(fb_tev_ty, net=show_net), f"LY {gbp(fb_tev_ly, net=show_net)}", delta_pct(fb_tev_ty, fb_tev_ly)), unsafe_allow_html=True)
-        c2.markdown(kpi_html("Wet (Drinks)", gbp(wet_ty, net=show_net), f"LY {gbp(wet_ly, net=show_net)}", delta_pct(wet_ty, wet_ly)), unsafe_allow_html=True)
-        c3.markdown(kpi_html("Dry (Food)", gbp(dry_ty, net=show_net), f"LY {gbp(dry_ly, net=show_net)}", delta_pct(dry_ty, dry_ly)), unsafe_allow_html=True)
-        c4.markdown(kpi_html("Covers (EPOS)", f"{ty_tev['covers']:,}", f"LY {ly_tev['covers']:,}", delta_pct(ty_tev["covers"], ly_tev["covers"])), unsafe_allow_html=True)
-
-        sec("Monthly F&B Revenue — EPOS (Tevalis)")
-        ty_wet_m_t = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("wet") or 0) for m in months_list]
-        ty_dry_m_t = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("dry") or 0) for m in months_list]
-        ty_tot_m_t = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("total") or 0) for m in months_list]
-        ly_tot_m_t = [(ly_tev["by_month"].get(lyk(m), {}).get("total") or 0) for m in months_list]
-
-        et1, et2 = st.tabs(["Wet + Dry Stack (TY)", "TY vs LY"])
-        with et1:
-            st.plotly_chart(stacked_bar(month_labels, ty_wet_m_t, ty_dry_m_t, height=400), use_container_width=True)
-        with et2:
-            st.plotly_chart(grouped_bar(month_labels, ty_tot_m_t, ly_tot_m_t, height=400), use_container_width=True)
-
-        sec("Revenue by Venue")
-        all_tev_v = sorted(set(list(ty_tev["by_venue"]) + list(ly_tev["by_venue"])))
-        tv_ty = [ty_tev["by_venue"].get(v, {}).get("total") or 0 for v in all_tev_v]
-        tv_ly = [ly_tev["by_venue"].get(v, {}).get("total") or 0 for v in all_tev_v]
-        cl, cr = st.columns(2)
-        with cl:
-            st.caption("This Year")
-            st.plotly_chart(hbar_chart(all_tev_v, tv_ty, height=len(all_tev_v)*40+80), use_container_width=True)
-        with cr:
-            st.caption("Last Year")
-            st.plotly_chart(hbar_chart(all_tev_v, tv_ly, height=len(all_tev_v)*40+80, colors=[BRAND_LIGHT]*len(all_tev_v)), use_container_width=True)
-
-        with st.expander("Venue detail table"):
-            vrows_t = []
-            for v in all_tev_v:
-                ty_v = ty_tev["by_venue"].get(v, {}); ly_v = ly_tev["by_venue"].get(v, {})
-                g = lambda d, k: d.get(k) or 0.0
-                ty_t = g(ty_v,"total"); ly_t = g(ly_v,"total")
-                vrows_t.append({
-                    "Venue": v,
-                    "LY Wet": gbp(g(ly_v,"wet"), net=show_net), "LY Dry": gbp(g(ly_v,"dry"), net=show_net), "LY Total": gbp(ly_t, net=show_net),
-                    "TY Wet": gbp(g(ty_v,"wet"), net=show_net), "TY Dry": gbp(g(ty_v,"dry"), net=show_net), "TY Total": gbp(ty_t, net=show_net),
-                    "TY Mix": f"{g(ty_v,'wet_pct')*100:.0f}%W / {(1-g(ty_v,'wet_pct'))*100:.0f}%D" if ty_t else "—",
-                    "TY Covers": f"{g(ty_v,'covers'):,.0f}",
-                    "YOY": pct(delta_pct(ty_t, ly_t)) if ly_t else "—",
-                })
-            st.dataframe(apply_style(pd.DataFrame(vrows_t), chg=["YOY"]), use_container_width=True, hide_index=True)
-
-        note("Data pulled live from Tevalis EPOS. Revenue is gross inc. VAT. "
-             "Service charge is excluded from wet/dry totals. "
-             "Covers reflect EPOS-recorded transactions, which may differ from SevenRooms reservation covers.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1067,3 +998,78 @@ with tab_rev:
                     f'</div>',
                     unsafe_allow_html=True,
                 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 10 — EPOS LIVE (Tevalis — supplementary / going forward)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_epos:
+    st.markdown(
+        '<div class="info-box"><b>EPOS Live</b> pulls directly from Tevalis in real time. '
+        'This tab is supplementary — all F&B figures across the rest of the dashboard '
+        'use your uploaded spreadsheet. Going forward, once Tevalis covers the full '
+        'financial year, it will replace the spreadsheet upload.</div>',
+        unsafe_allow_html=True,
+    )
+    with st.spinner("Loading Tevalis EPOS data…"):
+        tev_raw = load_tevalis(ty_from, ty_to, ly_from, ly_to)
+    ty_tev = M.tevalis_metrics(tev_raw.get("ty", pd.DataFrame()))
+    ly_tev = M.tevalis_metrics(tev_raw.get("ly", pd.DataFrame()))
+    has_tev = ty_tev["total"] > 0
+    if not has_tev:
+        st.info("No Tevalis EPOS data loaded yet — try refreshing.")
+    else:
+        wet_ty = ty_tev["wet"]; wet_ly = ly_tev["wet"] or 0
+        dry_ty = ty_tev["dry"]; dry_ly = ly_tev["dry"] or 0
+        fb_tev_ty = ty_tev["total"]; fb_tev_ly = ly_tev["total"] or 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(kpi_html(f"Total F&B {'(Net)' if show_net else '(Gross)'}",
+            gbp(fb_tev_ty, net=show_net), f"LY {gbp(fb_tev_ly, net=show_net)}", delta_pct(fb_tev_ty, fb_tev_ly)), unsafe_allow_html=True)
+        c2.markdown(kpi_html("Wet (Drinks)", gbp(wet_ty, net=show_net), f"LY {gbp(wet_ly, net=show_net)}", delta_pct(wet_ty, wet_ly)), unsafe_allow_html=True)
+        c3.markdown(kpi_html("Dry (Food)", gbp(dry_ty, net=show_net), f"LY {gbp(dry_ly, net=show_net)}", delta_pct(dry_ty, dry_ly)), unsafe_allow_html=True)
+        c4.markdown(kpi_html("Covers (EPOS)", f"{ty_tev['covers']:,}", f"LY {ly_tev['covers']:,}", delta_pct(ty_tev["covers"], ly_tev["covers"])), unsafe_allow_html=True)
+
+        sec("Monthly F&B Revenue — EPOS (Tevalis)")
+        ty_wet_m_t = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("wet") or 0) for m in months_list]
+        ty_dry_m_t = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("dry") or 0) for m in months_list]
+        ty_tot_m_t = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("total") or 0) for m in months_list]
+        ly_tot_m_t = [(ly_tev["by_month"].get(lyk(m), {}).get("total") or 0) for m in months_list]
+
+        et1, et2 = st.tabs(["Wet + Dry Stack (TY)", "TY vs LY"])
+        with et1:
+            st.plotly_chart(stacked_bar(month_labels, ty_wet_m_t, ty_dry_m_t, height=400), use_container_width=True)
+        with et2:
+            st.plotly_chart(grouped_bar(month_labels, ty_tot_m_t, ly_tot_m_t, height=400), use_container_width=True)
+
+        sec("Revenue by Venue")
+        all_tev_v = sorted(set(list(ty_tev["by_venue"]) + list(ly_tev["by_venue"])))
+        tv_ty = [ty_tev["by_venue"].get(v, {}).get("total") or 0 for v in all_tev_v]
+        tv_ly = [ly_tev["by_venue"].get(v, {}).get("total") or 0 for v in all_tev_v]
+        cl, cr = st.columns(2)
+        with cl:
+            st.caption("This Year")
+            st.plotly_chart(hbar_chart(all_tev_v, tv_ty, height=len(all_tev_v)*40+80), use_container_width=True)
+        with cr:
+            st.caption("Last Year")
+            st.plotly_chart(hbar_chart(all_tev_v, tv_ly, height=len(all_tev_v)*40+80, colors=[BRAND_LIGHT]*len(all_tev_v)), use_container_width=True)
+
+        with st.expander("Venue detail table"):
+            vrows_t = []
+            for v in all_tev_v:
+                ty_v = ty_tev["by_venue"].get(v, {}); ly_v = ly_tev["by_venue"].get(v, {})
+                g = lambda d, k: d.get(k) or 0.0
+                ty_t = g(ty_v,"total"); ly_t = g(ly_v,"total")
+                vrows_t.append({
+                    "Venue": v,
+                    "LY Wet": gbp(g(ly_v,"wet"), net=show_net), "LY Dry": gbp(g(ly_v,"dry"), net=show_net), "LY Total": gbp(ly_t, net=show_net),
+                    "TY Wet": gbp(g(ty_v,"wet"), net=show_net), "TY Dry": gbp(g(ty_v,"dry"), net=show_net), "TY Total": gbp(ty_t, net=show_net),
+                    "TY Mix": f"{g(ty_v,'wet_pct')*100:.0f}%W / {(1-g(ty_v,'wet_pct'))*100:.0f}%D" if ty_t else "—",
+                    "TY Covers": f"{g(ty_v,'covers'):,.0f}",
+                    "YOY": pct(delta_pct(ty_t, ly_t)) if ly_t else "—",
+                })
+            st.dataframe(apply_style(pd.DataFrame(vrows_t), chg=["YOY"]), use_container_width=True, hide_index=True)
+
+        note("Data pulled live from Tevalis EPOS. Revenue is gross inc. VAT. "
+             "Service charge is excluded from wet/dry totals. "
+             "Covers reflect EPOS-recorded transactions, which may differ from SevenRooms reservation covers.")

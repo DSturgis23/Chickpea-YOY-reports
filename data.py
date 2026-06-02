@@ -223,7 +223,7 @@ def fetch_sr_reservations(token, venue_map, from_date, to_date):
     params  = {
         "from_date": from_date.strftime("%Y-%m-%d"),
         "to_date":   to_date.strftime("%Y-%m-%d"),
-        "limit":     400,
+        "limit":     1000,
     }
 
     while True:
@@ -465,7 +465,7 @@ def _tev_summary(site_id, from_date, to_date):
             "uriCommand.dateFrom": from_date.isoformat(),
             "uriCommand.dateTo":   to_date.isoformat(),
         },
-        timeout=60,
+        timeout=15,
     )
     resp.raise_for_status()
     return resp.json() if isinstance(resp.json(), list) else []
