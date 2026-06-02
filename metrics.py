@@ -330,6 +330,7 @@ def tevalis_metrics(df):
     total      = total_wet + total_dry
     total_cov  = int(df["covers"].sum())
     total_txns = int(df["transactions"].sum())
+    total_epos_cov = int(df["epos_covers"].sum()) if "epos_covers" in df.columns else 0
 
     by_venue = {}
     for venue, vdf in df.groupby("venue_name"):
@@ -338,7 +339,8 @@ def tevalis_metrics(df):
             "wet": vw, "dry": vd, "total": vt,
             "wet_pct": vw / vt if vt > 0 else 0.0,
             "dry_pct": vd / vt if vt > 0 else 0.0,
-            "covers":  int(vdf["covers"].sum()),
+            "covers":      int(vdf["covers"].sum()),
+            "epos_covers": int(vdf["epos_covers"].sum()) if "epos_covers" in vdf.columns else 0,
         }
 
     by_month = {}
@@ -347,7 +349,8 @@ def tevalis_metrics(df):
         by_month[str(month)] = {
             "wet": mw, "dry": md, "total": mt,
             "wet_pct": mw / mt if mt > 0 else 0.0,
-            "covers":  int(mdf["covers"].sum()),
+            "covers":      int(mdf["covers"].sum()),
+            "epos_covers": int(mdf["epos_covers"].sum()) if "epos_covers" in mdf.columns else 0,
         }
 
     return {
@@ -355,6 +358,7 @@ def tevalis_metrics(df):
         "wet_pct": total_wet / total if total > 0 else 0.0,
         "dry_pct": total_dry / total if total > 0 else 0.0,
         "covers": total_cov, "transactions": total_txns,
+        "epos_covers": total_epos_cov,
         "by_venue": by_venue, "by_month": by_month,
     }
 
@@ -363,6 +367,6 @@ def _empty_tev_metrics():
     return {
         "wet": 0.0, "dry": 0.0, "total": 0.0,
         "wet_pct": 0.0, "dry_pct": 0.0,
-        "covers": 0, "transactions": 0,
+        "covers": 0, "transactions": 0, "epos_covers": 0,
         "by_venue": {}, "by_month": {},
     }

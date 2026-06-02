@@ -201,14 +201,21 @@ def load_tevalis(tf, tt, lf, lt):
         out["err"] = str(e)
     return out
 
-# ── Load once — all subsequent re-renders are instant dict lookups ─────────────
+# ── Load once — all fetches run in parallel; subsequent re-renders are instant ──
 with st.spinner("Loading data…"):
-    _d   = load_all(ty_from, ty_to, ly_from, ly_to)
-    ty_wd, ly_wd = load_sales(ty_from, ty_to, ly_from, ly_to)
+    with ThreadPoolExecutor(max_workers=3) as _lpool:
+        _f_all   = _lpool.submit(load_all,    ty_from, ty_to, ly_from, ly_to)
+        _f_sales = _lpool.submit(load_sales,  ty_from, ty_to, ly_from, ly_to)
+        _f_tev   = _lpool.submit(load_tevalis, ty_from, ty_to, ly_from, ly_to)
+        _d               = _f_all.result()
+        ty_wd, ly_wd     = _f_sales.result()
+        tev_raw          = _f_tev.result()
 
 ty_ev = _d["ty_ev"]; ly_ev = _d["ly_ev"]
 ty_sr = _d["ty_sr"]; ly_sr = _d["ly_sr"]
 _vm   = _d["vm"]
+ty_tev = M.tevalis_metrics(tev_raw.get("ty", pd.DataFrame()))
+ly_tev = M.tevalis_metrics(tev_raw.get("ly", pd.DataFrame()))
 
 if _d["ev_err"]: st.sidebar.warning(f"Eviivo: {_d['ev_err'][:80]}")
 if _d["sr_err"]: st.sidebar.warning(f"SevenRooms: {_d['sr_err'][:80]}")
@@ -577,31 +584,61 @@ with tab_res:
     res_ty = ty_sr["reservations"] or 0; res_ly = ly_sr["reservations"] or 0
     rr_ty  = ty_sr["repeat_rate"]  or 0; rr_ly  = ly_sr["repeat_rate"]  or 0
 
+    epos_cov_ty = ty_tev["epos_covers"] or 0
+    epos_cov_ly = ly_tev["epos_covers"] or 0
+
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown(kpi_html("Reservations", f"{res_ty:,}", f"LY {res_ly:,}", delta_pct(res_ty, res_ly)), unsafe_allow_html=True)
-    c2.markdown(kpi_html("Covers", f"{cov_ty:,}", f"LY {cov_ly:,}", delta_pct(cov_ty, cov_ly)), unsafe_allow_html=True)
-    c3.markdown(kpi_html("Unique Guests", f"{ug_ty:,}", f"LY {ug_ly:,}", delta_pct(ug_ty, ug_ly)), unsafe_allow_html=True)
-    c4.markdown(kpi_html("Repeat Visit Rate", f"{rr_ty*100:.1f}%", f"LY {rr_ly*100:.1f}%", delta_pct(rr_ty, rr_ly)), unsafe_allow_html=True)
+    c2.markdown(kpi_html("Unique Guests", f"{ug_ty:,}", f"LY {ug_ly:,}", delta_pct(ug_ty, ug_ly)), unsafe_allow_html=True)
+    c3.markdown(kpi_html("Repeat Visit Rate", f"{rr_ty*100:.1f}%", f"LY {rr_ly*100:.1f}%", delta_pct(rr_ty, rr_ly)), unsafe_allow_html=True)
+    c4.markdown(kpi_html("Avg Party Size", f"{ty_sr['avg_covers']:.1f}", f"LY {ly_sr['avg_covers']:.1f}", None), unsafe_allow_html=True)
+
+    st.markdown("&nbsp;", unsafe_allow_html=True)
+    sec("Covers — Two Methods")
+    cc1, cc2 = st.columns(2)
+    cc1.markdown(kpi_html("Covers — SevenRooms",
+        f"{cov_ty:,}", f"LY {cov_ly:,}", delta_pct(cov_ty, cov_ly)), unsafe_allow_html=True)
+    cc1.caption("Advance reservations only. Walk-ins not included.")
+    if epos_cov_ty:
+        cc2.markdown(kpi_html("Covers — EPOS (Mains sold)",
+            f"{epos_cov_ty:,}", f"LY {epos_cov_ly:,}" if epos_cov_ly else "—",
+            delta_pct(epos_cov_ty, epos_cov_ly) if epos_cov_ly else None), unsafe_allow_html=True)
+        cc2.caption("Counts of mains, pizza, handmade pie, roast & pub bangers sold via Tevalis.")
+    else:
+        cc2.info("EPOS covers will show here once Tevalis data is available.")
 
     note("SevenRooms records reservation covers only — walk-ins not logged are excluded. "
-         "Prior-year data includes a ResDiary migration export which may have inflated LY counts. "
-         "FY2026-27 will be the first clean like-for-like year.")
+         "EPOS covers count one main-course transaction as one diner, including walk-ins. "
+         "Prior-year SevenRooms data includes a ResDiary migration export which may have inflated LY counts.")
 
-    sec("Monthly Covers — This Year vs Last Year")
+    sec("Monthly Covers — SevenRooms vs EPOS")
     ty_cov_m = [(ty_sr["by_month"].get(m.strftime("%Y-%m"), {}).get("covers") or 0) for m in months_list]
     ly_cov_m = [(ly_sr["by_month"].get(lyk(m), {}).get("covers") or 0) for m in months_list]
+    ty_epos_m = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("epos_covers") or 0) for m in months_list]
 
-    col_cv, col_fd = st.columns([3, 1])
-    with col_cv:
-        st.plotly_chart(grouped_bar(month_labels, ty_cov_m, ly_cov_m, prefix="", height=360), use_container_width=True)
-    with col_fd:
-        fd = ty_sr.get("freq_dist") or {}
-        if any(fd.values()):
-            st.plotly_chart(donut_chart(
-                list(fd.keys()), list(fd.values()),
-                colors=[BRAND_GREEN, "#4a9060", "#90b890", "#c8dfc8"],
-                center_text="Guest<br>Frequency", height=360,
-            ), use_container_width=True)
+    if epos_cov_ty:
+        rcv1, rcv2 = st.tabs(["SevenRooms covers", "EPOS covers (mains sold)"])
+    else:
+        rcv1 = st.container(); rcv2 = None
+
+    with rcv1:
+        col_cv, col_fd = st.columns([3, 1])
+        with col_cv:
+            st.plotly_chart(grouped_bar(month_labels, ty_cov_m, ly_cov_m, prefix="", height=360), use_container_width=True)
+        with col_fd:
+            fd = ty_sr.get("freq_dist") or {}
+            if any(fd.values()):
+                st.plotly_chart(donut_chart(
+                    list(fd.keys()), list(fd.values()),
+                    colors=[BRAND_GREEN, "#4a9060", "#90b890", "#c8dfc8"],
+                    center_text="Guest<br>Frequency", height=360,
+                ), use_container_width=True)
+
+    if rcv2 and epos_cov_ty:
+        with rcv2:
+            ly_epos_m = [(ly_tev["by_month"].get(lyk(m), {}).get("epos_covers") or 0) for m in months_list]
+            st.plotly_chart(grouped_bar(month_labels, ty_epos_m, ly_epos_m, prefix="", height=360,
+                                        ty_name="TY EPOS Covers", ly_name="LY EPOS Covers"), use_container_width=True)
 
     sec("By Venue")
     all_sv = sorted(set(list(ty_sr["by_venue"]) + list(ly_sr["by_venue"])))
@@ -610,14 +647,19 @@ with tab_res:
         ty_v = ty_sr["by_venue"].get(v, {}); ly_v = ly_sr["by_venue"].get(v, {})
         g = lambda d, k: d.get(k) or 0
         ty_c = g(ty_v,"covers"); ly_c = g(ly_v,"covers")
-        srows.append({
+        tev_v = ty_tev["by_venue"].get(v, {})
+        row = {
             "Venue": v,
             "LY Res": f"{g(ly_v,'reservations'):,}", "TY Res": f"{g(ty_v,'reservations'):,}",
-            "LY Covers": f"{ly_c:,}", "TY Covers": f"{ty_c:,}",
-            "YOY Covers": pct(delta_pct(ty_c, ly_c)) if ly_c else "—",
+            "LY SR Covers": f"{ly_c:,}", "TY SR Covers": f"{ty_c:,}",
+            "YOY SR Covers": pct(delta_pct(ty_c, ly_c)) if ly_c else "—",
             "TY Avg Party": f"{g(ty_v,'avg_covers'):.1f}",
-        })
-    st.dataframe(apply_style(pd.DataFrame(srows), chg=["YOY Covers"]), use_container_width=True, hide_index=True)
+        }
+        if epos_cov_ty:
+            row["TY EPOS Covers"] = f"{tev_v.get('epos_covers') or 0:,}"
+        srows.append(row)
+    chg_cols = ["YOY SR Covers"]
+    st.dataframe(apply_style(pd.DataFrame(srows), chg=chg_cols), use_container_width=True, hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1011,10 +1053,6 @@ with tab_epos:
         'financial year, it will replace the spreadsheet upload.</div>',
         unsafe_allow_html=True,
     )
-    with st.spinner("Loading Tevalis EPOS data…"):
-        tev_raw = load_tevalis(ty_from, ty_to, ly_from, ly_to)
-    ty_tev = M.tevalis_metrics(tev_raw.get("ty", pd.DataFrame()))
-    ly_tev = M.tevalis_metrics(tev_raw.get("ly", pd.DataFrame()))
     has_tev = ty_tev["total"] > 0
     if not has_tev:
         st.info("No Tevalis EPOS data loaded yet — try refreshing.")
@@ -1023,12 +1061,17 @@ with tab_epos:
         dry_ty = ty_tev["dry"]; dry_ly = ly_tev["dry"] or 0
         fb_tev_ty = ty_tev["total"]; fb_tev_ly = ly_tev["total"] or 0
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.markdown(kpi_html(f"Total F&B {'(Net)' if show_net else '(Gross)'}",
             gbp(fb_tev_ty, net=show_net), f"LY {gbp(fb_tev_ly, net=show_net)}", delta_pct(fb_tev_ty, fb_tev_ly)), unsafe_allow_html=True)
         c2.markdown(kpi_html("Wet (Drinks)", gbp(wet_ty, net=show_net), f"LY {gbp(wet_ly, net=show_net)}", delta_pct(wet_ty, wet_ly)), unsafe_allow_html=True)
         c3.markdown(kpi_html("Dry (Food)", gbp(dry_ty, net=show_net), f"LY {gbp(dry_ly, net=show_net)}", delta_pct(dry_ty, dry_ly)), unsafe_allow_html=True)
-        c4.markdown(kpi_html("Covers (EPOS)", f"{ty_tev['covers']:,}", f"LY {ly_tev['covers']:,}", delta_pct(ty_tev["covers"], ly_tev["covers"])), unsafe_allow_html=True)
+        c4.markdown(kpi_html("Covers (EPOS, all food)", f"{ty_tev['covers']:,}", f"LY {ly_tev['covers']:,}", delta_pct(ty_tev["covers"], ly_tev["covers"])), unsafe_allow_html=True)
+        _ec_ty = ty_tev["epos_covers"]; _ec_ly = ly_tev["epos_covers"]
+        c5.markdown(kpi_html("Covers (Mains sold)",
+            f"{_ec_ty:,}" if _ec_ty else "—",
+            f"LY {_ec_ly:,}" if _ec_ly else "—",
+            delta_pct(_ec_ty, _ec_ly) if _ec_ty and _ec_ly else None), unsafe_allow_html=True)
 
         sec("Monthly F&B Revenue — EPOS (Tevalis)")
         ty_wet_m_t = [(ty_tev["by_month"].get(m.strftime("%Y-%m"), {}).get("wet") or 0) for m in months_list]
