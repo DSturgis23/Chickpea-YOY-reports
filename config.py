@@ -14,8 +14,8 @@ def get_eviivo_creds():
         }
     except Exception:
         return {
-            "client_id":     "4a8fc6f8-a0f7-4618-ad28-3c61b00b5d5d",
-            "client_secret": "1knWGGXhWQDOv7KTubOJ",
+            "client_id":     "",
+            "client_secret": "",
             "auth_url":      "https://auth.eviivo.com/api/connect/token",
             "api_url":       "https://io.eviivo.com/pms/v2",
         }
@@ -30,8 +30,8 @@ def get_sr_creds():
         }
     except Exception:
         return {
-            "client_id":     "dcc8dabbbd8de6f13b9831b31535eac35f0792ba6caec7cd2418fb72d1cc90acac580700da9861dfa64f17988b3dcbdd651e3e5fcd626aeb1e70689a37daa962",
-            "client_secret": "40590241a64c8988a36341b5245c04eaaac175d3742ab8e09bea7b7fd46cdf56dda467c75934b5a2c557725a4411efad473a0d54747a2aa6291e6a21c7d21d51",
+            "client_id":     "",
+            "client_secret": "",
             "api_url":       "https://api.sevenrooms.com/2_4",
         }
 
